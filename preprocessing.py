@@ -3,7 +3,8 @@ from nltk import word_tokenize
 from urllib import request
 from bs4 import BeautifulSoup
 
-nltk.download()
+import nltk
+nltk.download('averaged_perceptron_tagger')
 
 # tokenizetion from guternberg book
 

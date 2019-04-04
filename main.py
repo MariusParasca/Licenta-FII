@@ -1,42 +1,27 @@
 from nltk import word_tokenize, PorterStemmer, ngrams
 from nltk.tag import pos_tag
+from nltk.corpus import wordnet
 from collections import defaultdict
 from sklearn.feature_extraction.text import TfidfVectorizer
 from pymetamap import MetaMap
 import numpy as np
 import re
 import string
-# import jpype
 
 
 class Preprocesor:
+    ADJ = 'ADJ'
+    NOUN = 'NOUN'
+    VERB = 'VERB'
+
     def __init__(self, metamap_path='/home/noway/Facultate/Licenta/public_mm/bin/metamap18'):
         self.mm = MetaMap.get_instance(metamap_path)
-        self.tfidf = TfidfVectorizer(tokenizer=self.tokenize_for_tfidf, stop_words='english')
+        # self.tfidf = TfidfVectorizer(tokenizer=self.tokenize_for_tfidf, stop_words='english')
         self.dataset = []
         self.dataset_without_punctuation = []
 
-    # def stanford_parse(self, s, jvm_path=r"C:\Program Files\Java\jdk1.8.0_161\jre\bin\server\jvm.dll",
-    #                    model=".\stanford-postagger-2018-10-16\models\english-left3words-distsim.tagger",
-    #                    classpath=r".\3rd party java\stanford-parser.jar"):
-    #     """Standford Part-Of-Speech using jpype as an interface to Java"""
-    #     jpype.startJVM(jvm_path, "-Djava.class.path=%s" % classpath)
-    #     nlp = jpype.JPackage("edu").stanford.nlp
-    #     tagger = nlp.tagger.maxent.MaxentTagger(model)
-    #     tokenize_text = nlp.tagger.maxent.MaxentTagger.tokenizeText
-    #     text = jpype.java.io.StringReader(s)
-    #     sentences = tokenize_text(text)
-    #     result = []
-    #     for sentence in sentences:
-    #         tsentence = tagger.tagSentence(sentence)
-    #         string = str(tsentence.toString())
-    #         result.append(string.replace("[", "").replace("]", "").replace(", ", " "))
-    #
-    #     jpype.shutdownJVM()
-    #     return result
-
     def ntlk_pos(self, s):
-        return pos_tag(word_tokenize(s))
+        return pos_tag(word_tokenize(s), tagset='universal')
 
     def get_nltk_porter_stemming(self, tokens):
         """Porter stemming using ntlk word tokenizer"""
@@ -69,8 +54,6 @@ class Preprocesor:
             stems.append(PorterStemmer().stem(item))
         return stems
 
-    # Cum fac tfidf-ul ? Doar pe textul pentru un medicament?
-
     def delete_punctuation(self):
         for data in self.dataset:
             text = data[1].lower().translate(str.maketrans('', '', string.punctuation))
@@ -80,13 +63,17 @@ class Preprocesor:
         self.delete_punctuation()
         self.tfidf.fit_transform(self.dataset_without_punctuation)
 
-    def get_tfidf(self, text):
+    def create_fit_transform_tfidf(self, text):
         text = text.lower().translate(str.maketrans('', '', string.punctuation))
-        response = self.tfidf.transform([text])
-        # print(response)
-        feature_names = self.tfidf.get_feature_names()
-        # for col in response.nonzero()[1]:
-        #     print(feature_names[col], ' - ', response[0, col])
+        tfidf = TfidfVectorizer(tokenizer=self.tokenize_for_tfidf, stop_words='english')
+        tfidf.fit_transform([text])
+        return tfidf
+
+    def get_tfidf(self, tfidf, textArray):
+        response = tfidf.transform(textArray)
+        feature_names = tfidf.get_feature_names()
+        for col in response.nonzero()[1]:
+            print(feature_names[col], ' - ', response[0, col])
 
     def read_rel_extension_file(self, filepath):
         result = []
@@ -106,41 +93,72 @@ class Preprocesor:
         self.dataset += result
         return result
 
-    def get_concept(self, text_array):
+    def get_concept(self, text_array):  # tfidf mai trebuie facut =-----------------------------------------
         concepts, error = self.mm.extract_concepts(text_array)
+        semantic_types = set()
+        cuis = set()
         if error:
             print(error)
-        return concepts
+        print(concepts)
+        for concept in concepts:
+            for semantic_type in re.findall(r'\w+', concept.semtypes):
+                semantic_types.add(semantic_type)
+            cuis.add(concept.cui)
+        return list(semantic_types), list(cuis)
 
     def get_features(self, dataset):
         features = defaultdict(list)
         # self.fit_transform_tfidf()
         for data in dataset:
-            # self.get_tfidf(data[1])
             tokenized_string = word_tokenize(data[1])
-            features["id"].append(data[0])
-            features["stemmed-text"].append(self.get_nltk_porter_stemming(tokenized_string))
+            features["1-grams"].append(self.get_n_grams(tokenized_string, 1))
             features["2-grams"].append(self.get_n_grams(tokenized_string, 2))
+            features["3-grams"].append(self.get_n_grams(tokenized_string, 3))
+            # self.get_tfidf(data[1])
+            # features["id"].append(data[0])
+            # features["stemmed-text"].append(self.get_nltk_porter_stemming(tokenized_string))
+
         return features
+
+    def get_synonyms(self, word):
+        synonyms = set()
+        for syn in wordnet.synsets(word):
+            for l in syn.lemmas():
+                synonyms.add(l.name())
+        return list(synonyms)
+
+    def get_syn_set(self, pos_text): # tfidf mai trebuie facut =-----------------------------------------
+        result = []
+        for word, pos_word in pos_text:
+            if pos_word == Preprocesor.NOUN:
+                result.append(list(set([word] + self.get_synonyms(word))) + [pos_word])
+            elif pos_word == Preprocesor.ADJ:
+                result.append(list(set([word] + self.get_synonyms(word))) + [pos_word])
+            elif pos_word == Preprocesor.VERB:
+                result.append(list(set([word] + self.get_synonyms(word))) + [pos_word])
+            else:
+                result.append([word, pos_word])
+        return result
 
 
 def main():
     p = Preprocesor()
     non_adr = p.read_rel_extension_file(r"./corpus/ADE-Corpus-V2/DRUG-AE.rel")
     # adr = p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
-    print(p.get_concept([non_adr[2][1]]))
     # dataset = np.array(non_adr + adr)
-    # print(p.get_features(dataset))
-    # string = input("Enter an string")
-    # porter_stemming = get_porter_stemming(s)
-    # two_grams = get_n_grams(s, n=2)
-    # three_grams = get_n_grams(s, n=3)
-    # print("Poter Stemming:", porter_stemming)
-    # print(two_grams)
-    # print(three_grams)
-    # print(stanford_parse(s))
-    # print(ntlk_pos(s))
+    # TFDIF TEST:
+    # sem, cuis = p.get_concept([non_adr[3][1]])
+    # tfidf = p.create_fit_transform_tfidf(non_adr[1][1])
+    # print(p.get_tfidf(tfidf, sem))
+
+    # POS TEST:
+    sentences_pos = p.ntlk_pos(non_adr[1][1])
+    print(p.get_syn_set(sentences_pos))
+    # print(p.get_features(non_adr)["1-grams"][1])
 
 
 if __name__ == '__main__':
     main()
+
+
+# Pe ce trebuie sa fac tdidf?
