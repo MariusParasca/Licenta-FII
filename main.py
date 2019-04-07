@@ -1,6 +1,7 @@
-from nltk import word_tokenize, PorterStemmer, ngrams
+from nltk import word_tokenize, PorterStemmer, ngrams, WordNetLemmatizer
 from nltk.tag import pos_tag
 from nltk.corpus import wordnet
+from nltk.corpus import sentiwordnet as swn
 from collections import defaultdict
 from sklearn.feature_extraction.text import TfidfVectorizer
 from pymetamap import MetaMap
@@ -10,9 +11,10 @@ import string
 
 
 class Preprocesor:
-    ADJ = 'ADJ'
-    NOUN = 'NOUN'
-    VERB = 'VERB'
+    ADJ = 'JJ'
+    NOUN = 'NN'
+    VERB = 'VB'
+    ADVERB = 'RB'
 
     def __init__(self, metamap_path='/home/noway/Facultate/Licenta/public_mm/bin/metamap18'):
         self.mm = MetaMap.get_instance(metamap_path)
@@ -20,15 +22,35 @@ class Preprocesor:
         self.dataset = []
         self.dataset_without_punctuation = []
 
-    def ntlk_pos(self, s):
-        return pos_tag(word_tokenize(s), tagset='universal')
+    def metamap_POS_to_sentiwordnet_POS(self, pos):
+        if Preprocesor.NOUN in pos:
+            return "n"
+        elif Preprocesor.VERB in pos:
+            return "v"
+        elif Preprocesor.ADJ in pos:
+            return "a"
+        elif Preprocesor.ADVERB in pos:
+            return "r"
+        else:
+            return ""
 
-    def get_nltk_porter_stemming(self, tokens):
+    def ntlk_pos(self, s, to_stem=True, to_string=False):
+        if to_stem:
+            s = self.get_nltk_porter_stemming(word_tokenize(s), to_string=to_string)
+        else:
+            s = word_tokenize(s.lower())
+        return pos_tag(s)
+
+    def get_nltk_porter_stemming(self, tokens, to_string=True):
         """Porter stemming using ntlk word tokenizer"""
+        porter_stemmer = PorterStemmer()
         stems = []
         for item in tokens:
-            stems.append(PorterStemmer().stem(item))
-        return " ".join(stems)
+            stems.append(porter_stemmer.stem(item))
+        if to_string:
+            return " ".join(stems)
+        else:
+            return  stems
 
     def get_porter_stemming(self, string):
         """Porter stemming using my string tokenizing method"""
@@ -130,15 +152,39 @@ class Preprocesor:
     def get_syn_set(self, pos_text): # tfidf mai trebuie facut =-----------------------------------------
         result = []
         for word, pos_word in pos_text:
-            if pos_word == Preprocesor.NOUN:
+            if Preprocesor.NOUN in pos_word:
                 result.append(list(set([word] + self.get_synonyms(word))) + [pos_word])
-            elif pos_word == Preprocesor.ADJ:
+            elif Preprocesor.ADJ in pos_word:
                 result.append(list(set([word] + self.get_synonyms(word))) + [pos_word])
-            elif pos_word == Preprocesor.VERB:
+            elif Preprocesor.VERB in pos_word:
                 result.append(list(set([word] + self.get_synonyms(word))) + [pos_word])
             else:
                 result.append([word, pos_word])
         return result
+
+    def get_sentiment_score(self, text): # nu stiu daca e corect si bun cum am facut
+        sentence_pos = self.ntlk_pos(text, to_stem=False)
+        word_net_lemmatizer = WordNetLemmatizer()
+
+        sum_score = 0
+        for word, word_pos in sentence_pos:
+            swn_pos_tag = self.metamap_POS_to_sentiwordnet_POS(word_pos)
+            if swn_pos_tag != "":
+                aux = word_net_lemmatizer.lemmatize(word) + '.' + swn_pos_tag + '.01'
+                try:
+                    sum_score += swn.senti_synset(aux).obj_score()
+                except:
+                    pass
+        return sum_score / len(sentence_pos)
+
+# 4.1.2. N-grams - done
+# 4.1.3. UMLS semantic types and concept IDs - half -> no tfidf -> Pe ce trebuie sa fac tdidf?
+# 4.1.4. Syn-set expansion - half -> no tfidf -> Pe ce trebuie sa fac tdidf?
+# 4.1.5. Change phrases - neimplementat
+# 4.1.6. ADR lexicon matches - neimplementat
+# 4.1.7. Sentiword scores - done -> nu stiu daca e corect
+# 4.1.8. Topic-based feature - neimplementat -> nu inteleg cum trebuie sa iau topic-ul
+#   see: https://rare-technologies.com/tutorial-on-mallet-in-python/
 
 
 def main():
@@ -146,14 +192,23 @@ def main():
     non_adr = p.read_rel_extension_file(r"./corpus/ADE-Corpus-V2/DRUG-AE.rel")
     # adr = p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
     # dataset = np.array(non_adr + adr)
+
     # TFDIF TEST:
     # sem, cuis = p.get_concept([non_adr[3][1]])
     # tfidf = p.create_fit_transform_tfidf(non_adr[1][1])
     # print(p.get_tfidf(tfidf, sem))
 
     # POS TEST:
-    sentences_pos = p.ntlk_pos(non_adr[1][1])
-    print(p.get_syn_set(sentences_pos))
+    sentences_pos = p.ntlk_pos(non_adr[1][1], to_stem=False)
+    print(sentences_pos)
+
+    # SYNs TEST:
+    # print(p.get_syn_set(sentences_pos))
+
+    # Sentiment score TEST:
+    print(p.get_sentiment_score(non_adr[1][1]))
+
+    # print(WordNetLemmatizer().lemmatize("was"))
     # print(p.get_features(non_adr)["1-grams"][1])
 
 
@@ -161,4 +216,3 @@ if __name__ == '__main__':
     main()
 
 
-# Pe ce trebuie sa fac tdidf?
