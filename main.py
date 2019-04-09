@@ -34,9 +34,11 @@ class Preprocesor:
         else:
             return ""
 
-    def ntlk_pos(self, s, to_stem=True, to_string=False):
+    def ntlk_pos(self, s, string_tokenezed=True, to_stem=True, to_string=False):
         if to_stem:
             s = self.get_nltk_porter_stemming(word_tokenize(s), to_string=to_string)
+        elif string_tokenezed:
+            pass
         else:
             s = word_tokenize(s.lower())
         return pos_tag(s)
@@ -128,20 +130,6 @@ class Preprocesor:
             cuis.add(concept.cui)
         return list(semantic_types), list(cuis)
 
-    def get_features(self, dataset):
-        features = defaultdict(list)
-        # self.fit_transform_tfidf()
-        for data in dataset:
-            tokenized_string = word_tokenize(data[1])
-            features["1-grams"].append(self.get_n_grams(tokenized_string, 1))
-            features["2-grams"].append(self.get_n_grams(tokenized_string, 2))
-            features["3-grams"].append(self.get_n_grams(tokenized_string, 3))
-            # self.get_tfidf(data[1])
-            # features["id"].append(data[0])
-            # features["stemmed-text"].append(self.get_nltk_porter_stemming(tokenized_string))
-
-        return features
-
     def get_synonyms(self, word):
         synonyms = set()
         for syn in wordnet.synsets(word):
@@ -167,15 +155,41 @@ class Preprocesor:
         word_net_lemmatizer = WordNetLemmatizer()
 
         sum_score = 0
+        sum_pos_socre = 0
+        sum_neg_score = 0
         for word, word_pos in sentence_pos:
             swn_pos_tag = self.metamap_POS_to_sentiwordnet_POS(word_pos)
             if swn_pos_tag != "":
                 aux = word_net_lemmatizer.lemmatize(word) + '.' + swn_pos_tag + '.01'
                 try:
                     sum_score += swn.senti_synset(aux).obj_score()
+                    sum_pos_socre += swn.senti_synset(aux).pos_score()
+                    sum_neg_score += swn.senti_synset(aux).neg_score()
                 except:
                     pass
-        return sum_score / len(sentence_pos)
+        return sum_pos_socre / len(sentence_pos), sum_neg_score / len(sentence_pos), sum_score / len(sentence_pos)
+
+    def get_features(self, dataset):
+        features = defaultdict(list)
+        # self.fit_transform_tfidf()
+        for data in dataset:
+            tokenized_string = self.get_string_tokenizing(data[1])  # word_tokenize(data[1])
+            print(tokenized_string)
+            features["1-grams"].append(self.get_n_grams(tokenized_string, 1))
+            features["2-grams"].append(self.get_n_grams(tokenized_string, 2))
+            features["3-grams"].append(self.get_n_grams(tokenized_string, 3))
+            features["semantic"].append(self.get_concept([data[1]]))
+            sentences_pos = self.ntlk_pos(tokenized_string, string_tokenezed=True, to_stem=False)
+            features["sentence_pos"].append(sentences_pos)
+            features["synset"].append(self.get_syn_set(sentences_pos))
+            features["sentiment-score"].append(self.get_sentiment_score(data[1]))
+            print(features)
+            break
+            # self.get_tfidf(data[1])
+            # features["id"].append(data[0])
+            # features["stemmed-text"].append(self.get_nltk_porter_stemming(tokenized_string))
+
+        return features
 
 # 4.1.2. N-grams - done
 # 4.1.3. UMLS semantic types and concept IDs - half -> no tfidf -> Pe ce trebuie sa fac tdidf?
@@ -190,8 +204,12 @@ class Preprocesor:
 def main():
     p = Preprocesor()
     non_adr = p.read_rel_extension_file(r"./corpus/ADE-Corpus-V2/DRUG-AE.rel")
-    # adr = p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
-    # dataset = np.array(non_adr + adr)
+    adr = p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
+    dataset = np.array(non_adr + adr)
+
+
+    p.get_features(dataset)
+
 
     # TFDIF TEST:
     # sem, cuis = p.get_concept([non_adr[3][1]])
@@ -199,14 +217,17 @@ def main():
     # print(p.get_tfidf(tfidf, sem))
 
     # POS TEST:
-    sentences_pos = p.ntlk_pos(non_adr[1][1], to_stem=False)
-    print(sentences_pos)
+    # sentences_pos = p.ntlk_pos(non_adr[1][1], to_stem=False)
+    # print(sentences_pos)
+
+    #Lenght in words
+    # print(len(sentences_pos))
 
     # SYNs TEST:
     # print(p.get_syn_set(sentences_pos))
 
     # Sentiment score TEST:
-    print(p.get_sentiment_score(non_adr[1][1]))
+    # print(p.get_sentiment_score(non_adr[1][1]))
 
     # print(WordNetLemmatizer().lemmatize("was"))
     # print(p.get_features(non_adr)["1-grams"][1])
