@@ -2,8 +2,13 @@ from nltk import word_tokenize, PorterStemmer, ngrams, WordNetLemmatizer
 from nltk.tag import pos_tag
 from nltk.corpus import wordnet
 from nltk.corpus import sentiwordnet as swn
-from collections import defaultdict
-from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from nltk.corpus.reader.wordnet import WordNetError
+# from collections import defaultdict
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer, TfidfTransformer
+from sklearn.model_selection import train_test_split
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
 from pymetamap import MetaMap
 import numpy as np
 import re
@@ -23,12 +28,13 @@ class Preprocesor:
     def __init__(self, metamap_path='/home/noway/Facultate/Licenta/public_mm/bin/metamap18'):
         self.mm = MetaMap.get_instance(metamap_path)
         # self.tfidf = TfidfVectorizer(tokenizer=self.tokenize_for_tfidf, stop_words='english')
-        self.X = []
+        self.x = []
         self.y = []
         self.corpus = []
         self.dataset_without_punctuation = []
 
-    def metamap_POS_to_sentiwordnet_POS(self, pos):
+    @staticmethod
+    def metamap_pos_to_sentiwordnet_pos(pos):
         if Preprocesor.NOUN in pos:
             return "n"
         elif Preprocesor.VERB in pos:
@@ -49,7 +55,8 @@ class Preprocesor:
             s = word_tokenize(s.lower())
         return pos_tag(s)
 
-    def get_nltk_porter_stemming(self, tokens, to_string=True):
+    @staticmethod
+    def get_nltk_porter_stemming(tokens, to_string=True):
         """Porter stemming using ntlk word tokenizer"""
         porter_stemmer = PorterStemmer()
         stems = []
@@ -58,70 +65,55 @@ class Preprocesor:
         if to_string:
             return " ".join(stems)
         else:
-            return  stems
+            return stems
 
-    def get_porter_stemming(self, string):
+    @staticmethod
+    def get_porter_stemming(text):
         """Porter stemming using my string tokenizing method"""
-        tokens = self.get_string_tokenizing(string)
+        tokens = Preprocesor.get_string_tokenizing(text)
         porter = PorterStemmer()
         porter_stemming = [porter.stem(t) for t in tokens]
         return porter_stemming
 
-    def get_string_tokenizing(self, string):
+    @staticmethod
+    def get_string_tokenizing(text):
         """ My string tokenizing method"""
-        string = string.lower()
-        string = re.sub(r'[^a-zA-Z0-9\s]', ' ', string)
-        return [token for token in string.split(" ") if token != ""]
+        text = text.lower()
+        text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
+        return [token for token in text.split(" ") if token != ""]
 
-    def get_n_grams_words(self, tokenized_string, n):
+    @staticmethod
+    def get_n_grams_words(tokenized_string, n):
         """"""
         return list(ngrams(tokenized_string, n))
-
-    def get_n_grams(self, n):
-        test = 0
-
-    def tokenize_for_tfidf(self, text):
+    
+    @staticmethod
+    def tokenize_for_tfidf(text):
         tokens = word_tokenize(text)
         stems = []
         for item in tokens:
             stems.append(PorterStemmer().stem(item))
         return stems
 
-    def delete_punctuation(self):
-        for data in self.dataset:
-            text = data[1].lower().translate(str.maketrans('', '', string.punctuation))
-            self.dataset_without_punctuation.append(text)
-
-    def fit_transform_tfidf(self):
-        self.delete_punctuation()
-        self.tfidf.fit(self.dataset_without_punctuation)
-
-    def create_fit_transform_tfidf(self, text):
-        text = text.lower().translate(str.maketrans('', '', string.punctuation))
-        tfidf = TfidfVectorizer(tokenizer=self.tokenize_for_tfidf, stop_words='english')
-        tfidf.fit_transform([text])
-        return tfidf
-
-    def get_tfidf(self, tfidf, textArray):
-        response = tfidf.transform(textArray)
-        feature_names = tfidf.get_feature_names()
-        for col in response.nonzero()[1]:
-            print(feature_names[col], ' - ', response[0, col])
-
     def transform_data_to_numpy_array(self):
-        self.X = np.array(self.X)
+        self.x = np.array(self.x)
         self.y = np.array(self.y)
 
-    def concat_X_with(self, data):
-        np.concatenate((self.X, data), axis=1)
+    def concat_x_with(self, data):
+        np.concatenate((self.x, data), axis=1)
 
-    def n_grams_fit_transform(self):
-        vectorizer = CountVectorizer(ngram_range=(1, 3)) 
+    def n_grams_fit_transform(self, ngram_range=(1, 3)):
+        vectorizer = CountVectorizer(ngram_range=ngram_range)
         x = vectorizer.fit_transform(self.corpus)
-        return vectorizer, x
+        return x
+
+    def tfidf_transformer_fit_traform(self):
+        tfidf_transformer = TfidfTransformer()
+        x = tfidf_transformer.fit_transform(self.x)
+        return x
 
     def tfidf_fit_transform(self):
-        tfidf = TfidfVectorizer(tokenizer=self.tokenize_for_tfidf, stop_words='english')
+        tfidf = TfidfVectorizer(tokenizer=Preprocesor.tokenize_for_tfidf, stop_words='english')
         tfidf.fit_transform(self.corpus)
         print(tfidf)
         return tfidf
@@ -130,7 +122,7 @@ class Preprocesor:
         with open(filepath, 'r') as fd:
             for line in fd.readlines():
                 data = line.rstrip().split("|")[:2]
-                self.X.append([data[0]])
+                self.x.append([data[0]])
                 self.y.append(0)
                 self.corpus.append(data[1].lower().translate(str.maketrans('', '', string.punctuation)))
 
@@ -138,7 +130,7 @@ class Preprocesor:
         with open(filepath, 'r') as fd:
             for line in fd.readlines():
                 aux = re.findall(r"(\d+)\s+(NEG)\s+(.+)", line)
-                self.X.append([aux[0][0]])
+                self.x.append([aux[0][0]])
                 self.y.append(1)
                 self.corpus.append(aux[0][2].lower().translate(str.maketrans('', '', string.punctuation)))
 
@@ -155,27 +147,29 @@ class Preprocesor:
             cuis.add(concept.cui)
         return list(semantic_types), list(cuis)
 
-    def get_synonyms(self, word):
+    @staticmethod
+    def get_synonyms(word):
         synonyms = set()
         for syn in wordnet.synsets(word):
             for l in syn.lemmas():
                 synonyms.add(l.name())
         return list(synonyms)
 
-    def get_syn_set(self, pos_text): # tfidf mai trebuie facut =-----------------------------------------
+    @staticmethod
+    def get_syn_set(pos_text):  # tfidf mai trebuie facut =-----------------------------------------
         result = []
         for word, pos_word in pos_text:
             if Preprocesor.NOUN in pos_word:
-                result.append(list(set([word] + self.get_synonyms(word))) + [pos_word])
+                result.append(list(set([word] + Preprocesor.get_synonyms(word))) + [pos_word])
             elif Preprocesor.ADJ in pos_word:
-                result.append(list(set([word] + self.get_synonyms(word))) + [pos_word])
+                result.append(list(set([word] + Preprocesor.get_synonyms(word))) + [pos_word])
             elif Preprocesor.VERB in pos_word:
-                result.append(list(set([word] + self.get_synonyms(word))) + [pos_word])
+                result.append(list(set([word] + Preprocesor.get_synonyms(word))) + [pos_word])
             else:
                 result.append([word, pos_word])
         return result
 
-    def get_sentiment_score(self, text): # nu stiu daca e corect si bun cum am facut
+    def get_sentiment_score(self, text):  # nu stiu daca e corect si bun cum am facut
         sentence_pos = self.ntlk_pos(text, to_stem=False)
         word_net_lemmatizer = WordNetLemmatizer()
 
@@ -183,56 +177,62 @@ class Preprocesor:
         sum_pos_socre = 0
         sum_neg_score = 0
         for word, word_pos in sentence_pos:
-            swn_pos_tag = self.metamap_POS_to_sentiwordnet_POS(word_pos)
+            swn_pos_tag = Preprocesor.metamap_pos_to_sentiwordnet_pos(word_pos)
             if swn_pos_tag != "":
                 aux = word_net_lemmatizer.lemmatize(word) + '.' + swn_pos_tag + '.01'
                 try:
                     sum_score += swn.senti_synset(aux).obj_score()
                     sum_pos_socre += swn.senti_synset(aux).pos_score()
                     sum_neg_score += swn.senti_synset(aux).neg_score()
-                except:
+                except WordNetError:
                     pass
         return sum_pos_socre / len(sentence_pos), sum_neg_score / len(sentence_pos), sum_score / len(sentence_pos)
 
-    def get_features(self):
-        features = defaultdict(list)
-        self.transform_data_to_numpy_array()
-
-        # vectorized, x_vectorized = self.n_grams_fit_transform()
-        # print(len(vectorized.get_feature_names()))
-
-        tfidf = self.tfidf_fit_transform()
-        self.get_tfidf(tfidf, [self.corpus[1]])
-
-        # self.concat_X_with(x_vectorized.toarray())
-        # self.write_n_grams_to_file("n_grams.txt", x_vectorized.toarray())
-
-        for data in self.X:
-            # x = vectorized.transform(data[1])
-            # print(x)
-            break
-            # tokenized_string = self.get_string_tokenizing(data[1])  # word_tokenize(data[1])
-            # print(tokenized_string)
-            # features["1-grams"].append(self.get_n_grams_words(tokenized_string, 1))
-            # features["2-grams"].append(self.get_n_grams_words(tokenized_string, 2))
-            # features["3-grams"].append(self.get_n_grams_words(tokenized_string, 3))
-            # features["semantic"].append(self.get_concept([data[1]]))
-            # sentences_pos = self.ntlk_pos(tokenized_string, string_tokenezed=True, to_stem=False)
-            # features["sentence_pos"].append(sentences_pos)
-            # features["synset"].append(self.get_syn_set(sentences_pos))
-            # features["sentiment-score"].append(self.get_sentiment_score(data[1]))
-            # print(features["synset"])
-            # break
-            # self.get_tfidf(data[1])
-            # features["id"].append(data[0])
-            # features["stemmed-text"].append(self.get_nltk_porter_stemming(tokenized_string))
-
-        return features
+    # def get_features(self):
+    #     features = defaultdict(list)
+    #     self.transform_data_to_numpy_array()
+    #
+    #     # for data in self.x:
+    #     #     break
+    #     # tokenized_string = Preprocesor.get_string_tokenizing(data[1])  # word_tokenize(data[1])
+    #     # print(tokenized_string)
+    #     # features["1-grams"].append(Preprocesor.get_n_grams_words(tokenized_string, 1))
+    #     # features["2-grams"].append(Preprocesor.get_n_grams_words(tokenized_string, 2))
+    #     # features["3-grams"].append(Preprocesor.get_n_grams_words(tokenized_string, 3))
+    #     # features["semantic"].append(self.get_concept([data[1]]))
+    #     # sentences_pos = self.ntlk_pos(tokenized_string, string_tokenezed=True, to_stem=False)
+    #     # features["sentence_pos"].append(sentences_pos)
+    #     # features["synset"].append(Preprocesor.get_syn_set(sentences_pos))
+    #     # features["sentiment-score"].append(self.get_sentiment_score(data[1]))
+    #     # features["id"].append(data[0])
+    #     # features["stemmed-text"].append(Preprocessor.get_nltk_porter_stemming(tokenized_string))
+    #
+    #     return features
 
     def write_n_grams_to_file(self, filename, data):
         with open(filename, 'w') as fd:
-            for i, x in enumerate(self.X):
+            for i, x in enumerate(self.x):
                 fd.write(" ".join(np.concatenate((x, data[i]))) + '\n')
+
+    def split_train_test(self, test_size=0.25, random_state=0):
+        return train_test_split(self.x, self.y, test_size=test_size, random_state=random_state)
+
+    @staticmethod
+    def train_fit_with_naive_bayes(x_train, y_train):
+        model = MultinomialNB()
+        model.fit(x_train, y_train)
+        return model
+
+    @staticmethod
+    def train_fit_with_svc(x_train, y_train, kernel='linear', random_state=0):
+        model = SVC(kernel=kernel, random_state=random_state)
+        model.fit(x_train, y_train)
+        return model
+
+    @staticmethod
+    def test_model(model, x_test, y_test):
+        y_predicted = model.predict(x_test)
+        print("Accuracy:", accuracy_score(y_test, y_predicted))
 
 # 4.1.2. N-grams - done
 # 4.1.3. UMLS semantic types and concept IDs - half -> no tfidf -> Pe ce trebuie sa fac tdidf?
@@ -248,11 +248,22 @@ def main():
     p = Preprocesor()
     p.read_rel_extension_file(r"./corpus/ADE-Corpus-V2/DRUG-AE.rel")
     p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
+
+    p.x = p.n_grams_fit_transform()
+    # p.x = Preprocesor.tfidf_transformer_fit_traform()
+
+    x_train, x_test, y_train, y_test = p.split_train_test()
+
+    model = p.train_fit_with_naive_bayes(x_train, y_train)  # NB accuracy score: 0.8462323524408913
+    # model = Preprocesor.train_fit_with_svc(x_train, y_train)  # SVM accuracy score: 0.9027045415887056
+    
+    Preprocesor.test_model(model, x_test, y_test)
+
     # transform_data_to_numpy_array()
     # p.n_grams_fit_transform()
-    p.get_features()
-    # p.get_features(dataset)
 
+    # p.get_features()
+    # p.get_features(dataset)
 
     # TFDIF TEST:
     # sem, cuis = p.get_concept([non_adr[3][1]])
@@ -263,20 +274,18 @@ def main():
     # sentences_pos = p.ntlk_pos(non_adr[1][1], to_stem=False)
     # print(sentences_pos)
 
-    #Lenght in words
+    # Lenght in words
     # print(len(sentences_pos))
 
     # SYNs TEST:
-    # print(p.get_syn_set(sentences_pos))
+    # print(Preprocesor.get_syn_set(sentences_pos))
 
     # Sentiment score TEST:
     # print(p.get_sentiment_score(non_adr[1][1]))
 
     # print(WordNetLemmatizer().lemmatize("was"))
     # print(p.get_features(non_adr)["1-grams"][1])
-
+   
 
 if __name__ == '__main__':
     main()
-
-
