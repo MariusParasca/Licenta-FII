@@ -3,11 +3,15 @@ from nltk.tag import pos_tag
 from nltk.corpus import wordnet
 from nltk.corpus import sentiwordnet as swn
 from collections import defaultdict
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from pymetamap import MetaMap
 import numpy as np
 import re
 import string
+
+# transformare semtypes si c
+# ~
+# count vectorizer
 
 
 class Preprocesor:
@@ -19,7 +23,9 @@ class Preprocesor:
     def __init__(self, metamap_path='/home/noway/Facultate/Licenta/public_mm/bin/metamap18'):
         self.mm = MetaMap.get_instance(metamap_path)
         # self.tfidf = TfidfVectorizer(tokenizer=self.tokenize_for_tfidf, stop_words='english')
-        self.dataset = []
+        self.X = []
+        self.y = []
+        self.corpus = []
         self.dataset_without_punctuation = []
 
     def metamap_POS_to_sentiwordnet_POS(self, pos):
@@ -67,9 +73,12 @@ class Preprocesor:
         string = re.sub(r'[^a-zA-Z0-9\s]', ' ', string)
         return [token for token in string.split(" ") if token != ""]
 
-    def get_n_grams(self, tokenized_string, n):
+    def get_n_grams_words(self, tokenized_string, n):
         """"""
         return list(ngrams(tokenized_string, n))
+
+    def get_n_grams(self, n):
+        test = 0
 
     def tokenize_for_tfidf(self, text):
         tokens = word_tokenize(text)
@@ -85,7 +94,7 @@ class Preprocesor:
 
     def fit_transform_tfidf(self):
         self.delete_punctuation()
-        self.tfidf.fit_transform(self.dataset_without_punctuation)
+        self.tfidf.fit(self.dataset_without_punctuation)
 
     def create_fit_transform_tfidf(self, text):
         text = text.lower().translate(str.maketrans('', '', string.punctuation))
@@ -99,23 +108,39 @@ class Preprocesor:
         for col in response.nonzero()[1]:
             print(feature_names[col], ' - ', response[0, col])
 
+    def transform_data_to_numpy_array(self):
+        self.X = np.array(self.X)
+        self.y = np.array(self.y)
+
+    def concat_X_with(self, data):
+        np.concatenate((self.X, data), axis=1)
+
+    def n_grams_fit_transform(self):
+        vectorizer = CountVectorizer(ngram_range=(1, 3)) 
+        x = vectorizer.fit_transform(self.corpus)
+        return vectorizer, x
+
+    def tfidf_fit_transform(self):
+        tfidf = TfidfVectorizer(tokenizer=self.tokenize_for_tfidf, stop_words='english')
+        tfidf.fit_transform(self.corpus)
+        print(tfidf)
+        return tfidf
+
     def read_rel_extension_file(self, filepath):
-        result = []
         with open(filepath, 'r') as fd:
             for line in fd.readlines():
                 data = line.rstrip().split("|")[:2]
-                result.append([data[0], data[1], False])
-        self.dataset += result
-        return result
+                self.X.append([data[0]])
+                self.y.append(0)
+                self.corpus.append(data[1].lower().translate(str.maketrans('', '', string.punctuation)))
 
     def read_txt_extension_file(self, filepath):
-        result = []
         with open(filepath, 'r') as fd:
             for line in fd.readlines():
                 aux = re.findall(r"(\d+)\s+(NEG)\s+(.+)", line)
-                result.append([aux[0][0], aux[0][2], True])
-        self.dataset += result
-        return result
+                self.X.append([aux[0][0]])
+                self.y.append(1)
+                self.corpus.append(aux[0][2].lower().translate(str.maketrans('', '', string.punctuation)))
 
     def get_concept(self, text_array):  # tfidf mai trebuie facut =-----------------------------------------
         concepts, error = self.mm.extract_concepts(text_array)
@@ -169,27 +194,45 @@ class Preprocesor:
                     pass
         return sum_pos_socre / len(sentence_pos), sum_neg_score / len(sentence_pos), sum_score / len(sentence_pos)
 
-    def get_features(self, dataset):
+    def get_features(self):
         features = defaultdict(list)
-        # self.fit_transform_tfidf()
-        for data in dataset:
-            tokenized_string = self.get_string_tokenizing(data[1])  # word_tokenize(data[1])
-            print(tokenized_string)
-            features["1-grams"].append(self.get_n_grams(tokenized_string, 1))
-            features["2-grams"].append(self.get_n_grams(tokenized_string, 2))
-            features["3-grams"].append(self.get_n_grams(tokenized_string, 3))
-            features["semantic"].append(self.get_concept([data[1]]))
-            sentences_pos = self.ntlk_pos(tokenized_string, string_tokenezed=True, to_stem=False)
-            features["sentence_pos"].append(sentences_pos)
-            features["synset"].append(self.get_syn_set(sentences_pos))
-            features["sentiment-score"].append(self.get_sentiment_score(data[1]))
-            print(features)
+        self.transform_data_to_numpy_array()
+
+        # vectorized, x_vectorized = self.n_grams_fit_transform()
+        # print(len(vectorized.get_feature_names()))
+
+        tfidf = self.tfidf_fit_transform()
+        self.get_tfidf(tfidf, [self.corpus[1]])
+
+        # self.concat_X_with(x_vectorized.toarray())
+        # self.write_n_grams_to_file("n_grams.txt", x_vectorized.toarray())
+
+        for data in self.X:
+            # x = vectorized.transform(data[1])
+            # print(x)
             break
+            # tokenized_string = self.get_string_tokenizing(data[1])  # word_tokenize(data[1])
+            # print(tokenized_string)
+            # features["1-grams"].append(self.get_n_grams_words(tokenized_string, 1))
+            # features["2-grams"].append(self.get_n_grams_words(tokenized_string, 2))
+            # features["3-grams"].append(self.get_n_grams_words(tokenized_string, 3))
+            # features["semantic"].append(self.get_concept([data[1]]))
+            # sentences_pos = self.ntlk_pos(tokenized_string, string_tokenezed=True, to_stem=False)
+            # features["sentence_pos"].append(sentences_pos)
+            # features["synset"].append(self.get_syn_set(sentences_pos))
+            # features["sentiment-score"].append(self.get_sentiment_score(data[1]))
+            # print(features["synset"])
+            # break
             # self.get_tfidf(data[1])
             # features["id"].append(data[0])
             # features["stemmed-text"].append(self.get_nltk_porter_stemming(tokenized_string))
 
         return features
+
+    def write_n_grams_to_file(self, filename, data):
+        with open(filename, 'w') as fd:
+            for i, x in enumerate(self.X):
+                fd.write(" ".join(np.concatenate((x, data[i]))) + '\n')
 
 # 4.1.2. N-grams - done
 # 4.1.3. UMLS semantic types and concept IDs - half -> no tfidf -> Pe ce trebuie sa fac tdidf?
@@ -203,12 +246,12 @@ class Preprocesor:
 
 def main():
     p = Preprocesor()
-    non_adr = p.read_rel_extension_file(r"./corpus/ADE-Corpus-V2/DRUG-AE.rel")
-    adr = p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
-    dataset = np.array(non_adr + adr)
-
-
-    p.get_features(dataset)
+    p.read_rel_extension_file(r"./corpus/ADE-Corpus-V2/DRUG-AE.rel")
+    p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
+    # transform_data_to_numpy_array()
+    # p.n_grams_fit_transform()
+    p.get_features()
+    # p.get_features(dataset)
 
 
     # TFDIF TEST:
