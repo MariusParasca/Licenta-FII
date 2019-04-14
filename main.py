@@ -10,6 +10,7 @@ from sklearn.naive_bayes import MultinomialNB
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
 from sklearn.utils import shuffle
+from scipy.sparse import csr_matrix, hstack
 from pymetamap import MetaMap
 import numpy as np
 import re
@@ -28,7 +29,7 @@ class Preprocesor:
 
     def __init__(self, metamap_path='/home/noway/Facultate/Licenta/public_mm/bin/metamap18'):
         self.mm = MetaMap.get_instance(metamap_path)
-        self.x = []
+        self.x = csr_matrix([])
         self.y = []
         self.corpus = []
         self.umls_semtypes_cuis = []
@@ -285,8 +286,17 @@ class Preprocesor:
         self.create_sem_abbreviation_translations(filepath_to_abbr_file)
         self.save_umls_features(filepath_to_save)
 
+    def create_tfidf_umls(self):
+        self.load_umls_features()
+        vectorizer = CountVectorizer()
+        x_aux = vectorizer.fit_transform(self.umls_semtypes_cuis)
+        tfidf_transformer = TfidfTransformer()
+        x_to_stack = tfidf_transformer.fit_transform(x_aux)
+        self.x = hstack([self.x, x_to_stack], format='csr')
+
     def create_features(self):
         self.n_grams_fit_transform()
+        self.create_tfidf_umls()
 
     def train_model(self, model_name='naive_bayes'):
         model = None
@@ -301,7 +311,8 @@ class Preprocesor:
         return model, x_test, y_test
 
 # 4.1.2. N-grams - done
-# 4.1.3. UMLS semantic types and concept IDs - half -> no tfidf -> Pe ce trebuie sa fac tdidf?
+# 4.1.3. UMLS semantic types and concept IDs - done (nu stiu daca CUI-urile trebuie transformate cumva,
+#                                                    asa ca le-am lasat asa cum sunt ele)
 # 4.1.4. Syn-set expansion - half -> no tfidf -> Pe ce trebuie sa fac tdidf?
 # 4.1.5. Change phrases - neimplementat
 # 4.1.6. ADR lexicon matches - neimplementat
@@ -315,10 +326,7 @@ def main():
 
     p.read_rel_extension_file(r"./corpus/ADE-Corpus-V2/DRUG-AE.rel")
     p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
-    print(len(p.corpus))
-    p.load_umls_features()
 
-    return
     model_name = "naive_bayes"
     model, x_test, y_test = p.train_model("naive_bayes")
 
