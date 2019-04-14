@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
+from sklearn.utils import shuffle
 from pymetamap import MetaMap
 import numpy as np
 import re
@@ -27,11 +28,11 @@ class Preprocesor:
 
     def __init__(self, metamap_path='/home/noway/Facultate/Licenta/public_mm/bin/metamap18'):
         self.mm = MetaMap.get_instance(metamap_path)
-        # self.tfidf = TfidfVectorizer(tokenizer=self.tokenize_for_tfidf, stop_words='english')
         self.x = []
         self.y = []
         self.corpus = []
-        self.dataset_without_punctuation = []
+        self.umls_semtypes_cuis = []
+        self.sem_abbreviation_translations = []
 
     @staticmethod
     def metamap_pos_to_sentiwordnet_pos(pos):
@@ -104,8 +105,7 @@ class Preprocesor:
 
     def n_grams_fit_transform(self, ngram_range=(1, 3)):
         vectorizer = CountVectorizer(ngram_range=ngram_range)
-        x = vectorizer.fit_transform(self.corpus)
-        return x
+        self.x = vectorizer.fit_transform(self.corpus)
 
     def tfidf_transformer_fit_traform(self):
         tfidf_transformer = TfidfTransformer()
@@ -118,29 +118,42 @@ class Preprocesor:
         print(tfidf)
         return tfidf
 
+    @staticmethod
+    def delete_punctuation(text):
+        return text.lower().translate(str.maketrans('', '', string.punctuation))
+
     def read_rel_extension_file(self, filepath):
         with open(filepath, 'r') as fd:
             for line in fd.readlines():
                 data = line.rstrip().split("|")[:2]
-                self.x.append([data[0]])
                 self.y.append(0)
-                self.corpus.append(data[1].lower().translate(str.maketrans('', '', string.punctuation)))
+                self.corpus.append(Preprocesor.delete_punctuation(data[1]))
 
     def read_txt_extension_file(self, filepath):
         with open(filepath, 'r') as fd:
             for line in fd.readlines():
                 aux = re.findall(r"(\d+)\s+(NEG)\s+(.+)", line)
-                self.x.append([aux[0][0]])
                 self.y.append(1)
-                self.corpus.append(aux[0][2].lower().translate(str.maketrans('', '', string.punctuation)))
+                self.corpus.append(Preprocesor.delete_punctuation(aux[0][2]))
+
+    def shuffle_data(self):
+        self.x, self.y = shuffle(self.x, self.y)
+
+    def test_for_good_shuffle(self):
+        count = 0
+        for i in range(0, len(self.x)):
+            if self.x[i][len(self.x) - 1] == self.y[0]:
+                count += 1
+        print(count, len(self.x))
 
     def get_concept(self, text_array):  # tfidf mai trebuie facut =-----------------------------------------
         concepts, error = self.mm.extract_concepts(text_array)
         semantic_types = set()
         cuis = set()
+
         if error:
             print(error)
-        print(concepts)
+
         for concept in concepts:
             for semantic_type in re.findall(r'\w+', concept.semtypes):
                 semantic_types.add(semantic_type)
@@ -230,9 +243,62 @@ class Preprocesor:
         return model
 
     @staticmethod
-    def test_model(model, x_test, y_test):
+    def test_model(model, model_name, x_test, y_test):
         y_predicted = model.predict(x_test)
-        print("Accuracy:", accuracy_score(y_test, y_predicted))
+        print("Accuracy " + model_name + ": ", accuracy_score(y_test, y_predicted))
+
+    def create_sem_abbreviation_translations(self, file_path=r'./abreviations_files/SemanticTypes_2018AB.txt'):
+        with open(file_path, 'r') as fd:
+            for line in fd.readlines():
+                aux = line.split("|")
+                self.sem_abbreviation_translations.append((aux[0], aux[len(aux) - 1].rstrip()))
+
+    def get_sem_abbreviation_translation(self, sem_type):
+        for data in self.sem_abbreviation_translations:
+            if data[0] == sem_type:
+                return data[1]
+        return ""
+
+    def translate_semantic_abbreviation(self, sem_types_abber):
+        if not self.sem_abbreviation_translations:
+            raise Exception("Please call 'create_sem_abbreviation_translations' for creating the " +
+                            "abbreviation translations")
+        result = []
+        for sem_type in sem_types_abber:
+            result.append(self.get_sem_abbreviation_translation(sem_type))
+        return result
+
+    def save_umls_features(self, filepath=r'./raw_features/semantic_types_ADE.txt'):
+        with open(filepath, 'w') as fd:
+            for text in self.corpus:
+                sem_types, cuis = self.get_concept([text])
+                aux = self.translate_semantic_abbreviation(sem_types)
+                fd.write(" ".join(aux + cuis) + '\n')
+
+    def load_umls_features(self, filepath=r'./raw_features/semantic_types_ADE.txt'):
+        with open(filepath, 'r') as fd:
+            for line in fd.readlines():
+                self.umls_semtypes_cuis.append(line.rstrip())
+
+    def create_concepts_file(self, filepath_to_save=r'./raw_features/semantic_types_ADE.txt',
+                             filepath_to_abbr_file=r'./abreviations_files/SemanticTypes_2018AB.txt'):
+        self.create_sem_abbreviation_translations(filepath_to_abbr_file)
+        self.save_umls_features(filepath_to_save)
+
+    def create_features(self):
+        self.n_grams_fit_transform()
+
+    def train_model(self, model_name='naive_bayes'):
+        model = None
+        self.create_features()
+        self.shuffle_data()
+        x_train, x_test, y_train, y_test = self.split_train_test()
+        if model_name == 'naive_bayes':
+            model = Preprocesor.train_fit_with_naive_bayes(x_train, y_train)  # NB accuracy score: 0.8462323524408913
+        elif model_name == 'svc':
+            model = Preprocesor.train_fit_with_svc(x_train, y_train)  # SVM accuracy score: 0.9027045415887056
+
+        return model, x_test, y_test
 
 # 4.1.2. N-grams - done
 # 4.1.3. UMLS semantic types and concept IDs - half -> no tfidf -> Pe ce trebuie sa fac tdidf?
@@ -246,18 +312,17 @@ class Preprocesor:
 
 def main():
     p = Preprocesor()
+
     p.read_rel_extension_file(r"./corpus/ADE-Corpus-V2/DRUG-AE.rel")
     p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
+    print(len(p.corpus))
+    p.load_umls_features()
 
-    p.x = p.n_grams_fit_transform()
-    # p.x = Preprocesor.tfidf_transformer_fit_traform()
+    return
+    model_name = "naive_bayes"
+    model, x_test, y_test = p.train_model("naive_bayes")
 
-    x_train, x_test, y_train, y_test = p.split_train_test()
-
-    model = p.train_fit_with_naive_bayes(x_train, y_train)  # NB accuracy score: 0.8462323524408913
-    # model = Preprocesor.train_fit_with_svc(x_train, y_train)  # SVM accuracy score: 0.9027045415887056
-    
-    Preprocesor.test_model(model, x_test, y_test)
+    Preprocesor.test_model(model, model_name, x_test, y_test)
 
     # transform_data_to_numpy_array()
     # p.n_grams_fit_transform()
