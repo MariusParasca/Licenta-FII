@@ -1,9 +1,8 @@
-from nltk import word_tokenize, PorterStemmer, ngrams, WordNetLemmatizer
+from nltk import word_tokenize, PorterStemmer, WordNetLemmatizer
 from nltk.tag import pos_tag
 from nltk.corpus import wordnet
 from nltk.corpus import sentiwordnet as swn
 from nltk.corpus.reader.wordnet import WordNetError
-# from collections import defaultdict
 from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import MultinomialNB
@@ -15,10 +14,6 @@ from pymetamap import MetaMap
 import re
 import string
 
-# transformare semtypes si c
-# ~
-# count vectorizer
-
 
 class Preprocesor:
     ADJ = 'JJ'
@@ -29,32 +24,18 @@ class Preprocesor:
 
     def __init__(self, metamap_path='/home/noway/Facultate/Licenta/public_mm/bin/metamap18'):
         self.mm = MetaMap.get_instance(metamap_path)
+        self.sem_abbreviation_translations = []
         self.x = csr_matrix([])
         self.y = []
         self.corpus = []
         self.umls_semtypes_cuis = []
         self.syns_features = []
-        self.sem_abbreviation_translations = []
-
-    @staticmethod
-    def train_fit_with_naive_bayes(x_train, y_train):
-        model = MultinomialNB()
-        model.fit(x_train, y_train)
-        return model
-
-    @staticmethod
-    def train_fit_with_svc(x_train, y_train, kernel='linear', random_state=0):
-        model = SVC(kernel=kernel, random_state=random_state)
-        model.fit(x_train, y_train)
-        return model
-
-    @staticmethod
-    def test_model(model, model_name, x_test, y_test):
-        y_predicted = model.predict(x_test)
-        print("Accuracy " + model_name + ": ", accuracy_score(y_test, y_predicted))
+        self.sentiment_scores = []
 
     @staticmethod
     def metamap_pos_to_sentiwordnet_pos(pos):
+        """Transform metamap part-of-speech to sentiwordnet part-of-speech.
+           If part-of-speech is different than noun, verb, adjective, or adverb we return the empty string: ''."""
         if Preprocesor.NOUN in pos:
             return "n"
         elif Preprocesor.VERB in pos:
@@ -68,7 +49,8 @@ class Preprocesor:
 
     @staticmethod
     def get_nltk_porter_stemming(tokens, to_string=True):
-        """Porter stemming using ntlk word tokenizer"""
+        """Porter stemming using ntlk word tokenizer.
+           If to_string=True we join the list by a ' '. Example: " ".join(stems)."""
         porter_stemmer = PorterStemmer()
         stems = []
         for item in tokens:
@@ -79,39 +61,13 @@ class Preprocesor:
             return stems
 
     @staticmethod
-    def get_porter_stemming(text):
-        """Porter stemming using my string tokenizing method"""
-        tokens = Preprocesor.get_string_tokenizing(text)
-        porter = PorterStemmer()
-        porter_stemming = [porter.stem(t) for t in tokens]
-        return porter_stemming
-
-    @staticmethod
-    def get_string_tokenizing(text):
-        """ My string tokenizing method"""
-        text = text.lower()
-        text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
-        return [token for token in text.split(" ") if token != ""]
-
-    @staticmethod
-    def get_n_grams_words(tokenized_string, n):
-        """"""
-        return list(ngrams(tokenized_string, n))
-
-    @staticmethod
-    def tokenize_for_tfidf(text):
-        tokens = word_tokenize(text)
-        stems = []
-        for item in tokens:
-            stems.append(PorterStemmer().stem(item))
-        return stems
-
-    @staticmethod
     def delete_punctuation(text):
+        """Delete the punctuation from text."""
         return text.lower().translate(str.maketrans('', '', string.punctuation))
 
     @staticmethod
     def get_synonyms(word):
+        """Get all the synonyms that a word have."""
         synonyms = set()
         for syn in wordnet.synsets(word):
             for l in syn.lemmas():
@@ -133,6 +89,23 @@ class Preprocesor:
             return ""
         else:
             return aux
+
+    @staticmethod
+    def train_fit_with_naive_bayes(x_train, y_train):
+        model = MultinomialNB()
+        model.fit(x_train, y_train)
+        return model
+
+    @staticmethod
+    def train_fit_with_svc(x_train, y_train, kernel='rbf', random_state=0):
+        model = SVC(kernel=kernel, random_state=random_state)
+        model.fit(x_train, y_train)
+        return model
+
+    @staticmethod
+    def test_model(model, model_name, x_test, y_test):
+        y_predicted = model.predict(x_test)
+        print("Accuracy " + model_name + ": ", accuracy_score(y_test, y_predicted))
 
     def ntlk_pos(self, s, string_tokenezed=True, to_stem=True, to_string=False):
         if to_stem:
@@ -156,6 +129,7 @@ class Preprocesor:
                 data = line.rstrip().split("|")[:2]
                 self.y.append(0)
                 self.corpus.append(Preprocesor.delete_punctuation(data[1]))
+        print("Data loaded from", filepath)
 
     def read_txt_extension_file(self, filepath):
         with open(filepath, 'r') as fd:
@@ -163,6 +137,7 @@ class Preprocesor:
                 aux = re.findall(r"(\d+)\s+(NEG)\s+(.+)", line)
                 self.y.append(1)
                 self.corpus.append(Preprocesor.delete_punctuation(aux[0][2]))
+        print("Data loaded from:", filepath)
 
     def shuffle_data(self):
         self.x, self.y = shuffle(self.x, self.y)
@@ -255,6 +230,27 @@ class Preprocesor:
                     fd.write(" ".join(synonyms) + "\n")
         print("Synonym features saved in:", filepath)
 
+    def save_sentiment_scores(self, filepath=r'./raw_features/sentiment_scores.txt'):
+        with open(filepath, 'w') as fd:
+            for line in self.corpus:
+                scores = list(self.get_sentiment_score(line))
+                fd.write(" ".join(map(str, scores)) + '\n')
+        print("Sentiment scores saved in:", filepath)
+
+    @staticmethod
+    def load_sentiment_scores(filepath=r'./raw_features/sentiment_scores.txt'):
+        result = []
+        with open(filepath, 'r') as fd:
+            for line in fd.readlines():
+                scores = [float(i) for i in line.rstrip().split(" ")]
+                result.append(scores)
+        print("Sentiment scores loaded from:", filepath)
+        return result
+
+    def create_sentiment_scores(self):
+        self.sentiment_scores = csr_matrix(Preprocesor.load_sentiment_scores())
+        self.concat_x_with(self.sentiment_scores)
+
     def create_concepts_file(self, filepath_to_save=r'./raw_features/semantic_types_ADE.txt',
                              filepath_to_abbr_file=r'./abreviations_files/SemanticTypes_2018AB.txt'):
         self.create_sem_abbreviation_translations(filepath_to_abbr_file)
@@ -280,6 +276,7 @@ class Preprocesor:
         self.create_n_grams()
         self.create_tfidf_umls()
         self.create_tfidf_syns()
+        self.create_sentiment_scores()
 
     def train_model(self, model_name='naive_bayes'):
         self.create_features()
@@ -289,9 +286,10 @@ class Preprocesor:
         if model_name == 'naive_bayes':
             model = Preprocesor.train_fit_with_naive_bayes(x_train, y_train)  # NB accuracy score: 0.8462323524408913 ->
             # 0.8617111753699609
-        elif model_name == 'svc':
-            model = Preprocesor.train_fit_with_svc(x_train, y_train)  # SVM accuracy score: 0.9027045415887056  ->
-            # 0.9055961898282021
+        elif model_name == 'svm':
+            model = Preprocesor.train_fit_with_svc(x_train, y_train)  # SVM accuracy score:
+            # Liniar kernel: 0.9027045415887056, 0.9055961898282021
+            # RBF kernel: 0.70
         else:
             raise Exception("Unknown model. Available models: naive_bayes, svc")
         print("Finishing training")
@@ -299,11 +297,11 @@ class Preprocesor:
 
 # 4.1.2. N-grams - done
 # 4.1.3. UMLS semantic types and concept IDs - done (nu stiu daca CUI-urile trebuie transformate cumva,
-#                                                    asa ca le-am lasat asa cum sunt ele)
-# 4.1.4. Syn-set expansion - done
+# asa ca le-am lasat asa cum sunt ele) -> aprox 0.5-1% imbunatatire cu NB
+# 4.1.4. Syn-set expansion - done -> aprox 0.5-1% imbunatatire cu NB
 # 4.1.5. Change phrases - neimplementat
 # 4.1.6. ADR lexicon matches - neimplementat
-# 4.1.7. Sentiword scores - done -> nu stiu daca e corect
+# 4.1.7. Sentiword scores - done -> nu stiu daca e corect -> nu pare a avea vreo imbunatatirele a acuratetei
 # 4.1.8. Topic-based feature - neimplementat -> nu inteleg cum trebuie sa iau topic-ul
 #   see: https://rare-technologies.com/tutorial-on-mallet-in-python/
 
@@ -314,8 +312,8 @@ def main():
     p.read_rel_extension_file(r"./corpus/ADE-Corpus-V2/DRUG-AE.rel")
     p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
 
-    model_name = "naive_bayes"
-    model, x_test, y_test = p.train_model("naive_bayes")
+    model_name = "svm"
+    model, x_test, y_test = p.train_model(model_name)
 
     Preprocesor.test_model(model, model_name, x_test, y_test)
 
