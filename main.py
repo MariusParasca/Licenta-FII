@@ -11,6 +11,7 @@ from sklearn.metrics import accuracy_score
 from sklearn.utils import shuffle
 from scipy.sparse import csr_matrix, hstack
 from pymetamap import MetaMap
+from gensim.models.wrappers import LdaMallet
 import re
 import string
 
@@ -22,10 +23,12 @@ class Preprocesor:
     ADVERB = 'RB'
     SYN_TAG = "SYN"
 
-    def __init__(self, metamap_path='/home/noway/Facultate/Licenta/public_mm/bin/metamap18'):
+    def __init__(self, metamap_path='/home/noway/Facultate/Licenta/public_mm/bin/metamap18',
+                 mallet_path=r'../mallet-2.0.8/bin/mallet'):
         self.mm = MetaMap.get_instance(metamap_path)
+        self.mallet_path = mallet_path
         self.sem_abbreviation_translations = []
-        self.x = csr_matrix([])
+        self.x = []
         self.y = []
         self.corpus = []
         self.umls_semtypes_cuis = []
@@ -91,6 +94,72 @@ class Preprocesor:
             return aux
 
     @staticmethod
+    def ntlk_pos(s, string_tokenezed=True, to_stem=True, to_string=False):
+        if to_stem:
+            s = Preprocesor.get_nltk_porter_stemming(word_tokenize(s), to_string=to_string)
+        elif string_tokenezed:
+            pass
+        else:
+            s = word_tokenize(s.lower())
+        return pos_tag(s)
+
+    @staticmethod
+    def get_basic_preprocessig(text):
+        text = Preprocesor.delete_punctuation(text)
+        tokens = word_tokenize(text)
+        return Preprocesor.get_nltk_porter_stemming(tokens, to_string=True)
+
+    @staticmethod
+    def get_sentiment_score(text):  # nu stiu daca e corect si bun cum am facut
+        sentence_pos = Preprocesor.ntlk_pos(text, to_stem=False)
+        word_net_lemmatizer = WordNetLemmatizer()
+
+        sum_score = 0
+        sum_pos_socre = 0
+        sum_neg_score = 0
+        for word, word_pos in sentence_pos:
+            swn_pos_tag = Preprocesor.metamap_pos_to_sentiwordnet_pos(word_pos)
+            if swn_pos_tag != "":
+                aux = word_net_lemmatizer.lemmatize(word) + '.' + swn_pos_tag + '.01'
+                try:
+                    sum_score += swn.senti_synset(aux).obj_score()
+                    sum_pos_socre += swn.senti_synset(aux).pos_score()
+                    sum_neg_score += swn.senti_synset(aux).neg_score()
+                except WordNetError:
+                    pass
+        return sum_pos_socre / len(sentence_pos), sum_neg_score / len(sentence_pos), sum_score / len(sentence_pos)
+
+    @staticmethod
+    def create_basic_processing_rel_file(corpus_filepah=r"./corpus/ADE-Corpus-V2/DRUG-AE.rel",
+                                         processed_filepath=r'./raw_features/DRUG-AE_processed.rel'):
+        with open(corpus_filepah, 'r') as fdr:
+            with open(processed_filepath, 'w') as fdw:
+                for line in fdr.readlines():
+                    data = line.rstrip().split("|")[:2]
+                    fdw.write(Preprocesor.get_basic_preprocessig(data[1]) + '\n')
+        print("Basic processing rel extension file saved in", processed_filepath)
+
+    @staticmethod
+    def create_basic_processing_txt_file(corpus_filepah=r"./corpus/ADE-Corpus-V2/ADE-NEG.txt",
+                                         processed_filepath=r'./raw_features/ADE-NEG_processed.txt'):
+        with open(corpus_filepah, 'r') as fdr:
+            with open(processed_filepath, 'w') as fdw:
+                for line in fdr.readlines():
+                    aux = re.findall(r"(\d+)\s+(NEG)\s+(.+)", line)
+                    fdw.write(Preprocesor.get_basic_preprocessig(aux[0][2]) + '\n')
+        print("Basic processing rel extension file saved in", processed_filepath)
+
+    @staticmethod
+    def load_sentiment_scores(filepath=r'./raw_features/sentiment_scores.txt'):
+        result = []
+        with open(filepath, 'r') as fd:
+            for line in fd.readlines():
+                scores = [float(i) for i in line.rstrip().split(" ")]
+                result.append(scores)
+        print("Sentiment scores loaded from:", filepath)
+        return result
+
+    @staticmethod
     def train_fit_with_naive_bayes(x_train, y_train):
         model = MultinomialNB()
         model.fit(x_train, y_train)
@@ -107,14 +176,19 @@ class Preprocesor:
         y_predicted = model.predict(x_test)
         print("Accuracy " + model_name + ": ", accuracy_score(y_test, y_predicted))
 
-    def ntlk_pos(self, s, string_tokenezed=True, to_stem=True, to_string=False):
-        if to_stem:
-            s = self.get_nltk_porter_stemming(word_tokenize(s), to_string=to_string)
-        elif string_tokenezed:
-            pass
-        else:
-            s = word_tokenize(s.lower())
-        return pos_tag(s)
+    def read_rel_extension_file(self, filepath=r'./raw_features/DRUG-AE_processed.rel'):
+        with open(filepath, 'r') as fd:
+            for line in fd.readlines():
+                self.y.append(1)
+                self.corpus.append(line.rstrip())
+        print("Data loaded from", filepath)
+
+    def read_txt_extension_file(self, filepath=r'./raw_features/ADE-NEG_processed.txt'):
+        with open(filepath, 'r') as fd:
+            for line in fd.readlines():
+                self.y.append(0)
+                self.corpus.append(line.rstrip())
+        print("Data loaded from:", filepath)
 
     def concat_x_with(self, data, frmt='csr'):
         self.x = hstack([self.x, data], format=frmt)
@@ -122,22 +196,6 @@ class Preprocesor:
     def create_n_grams(self, ngram_range=(1, 3)):
         vectorizer = CountVectorizer(ngram_range=ngram_range)
         self.x = vectorizer.fit_transform(self.corpus)
-
-    def read_rel_extension_file(self, filepath):
-        with open(filepath, 'r') as fd:
-            for line in fd.readlines():
-                data = line.rstrip().split("|")[:2]
-                self.y.append(0)
-                self.corpus.append(Preprocesor.delete_punctuation(data[1]))
-        print("Data loaded from", filepath)
-
-    def read_txt_extension_file(self, filepath):
-        with open(filepath, 'r') as fd:
-            for line in fd.readlines():
-                aux = re.findall(r"(\d+)\s+(NEG)\s+(.+)", line)
-                self.y.append(1)
-                self.corpus.append(Preprocesor.delete_punctuation(aux[0][2]))
-        print("Data loaded from:", filepath)
 
     def shuffle_data(self):
         self.x, self.y = shuffle(self.x, self.y)
@@ -155,25 +213,6 @@ class Preprocesor:
                 semantic_types.add(semantic_type)
             cuis.add(concept.cui)
         return list(semantic_types), list(cuis)
-
-    def get_sentiment_score(self, text):  # nu stiu daca e corect si bun cum am facut
-        sentence_pos = self.ntlk_pos(text, to_stem=False)
-        word_net_lemmatizer = WordNetLemmatizer()
-
-        sum_score = 0
-        sum_pos_socre = 0
-        sum_neg_score = 0
-        for word, word_pos in sentence_pos:
-            swn_pos_tag = Preprocesor.metamap_pos_to_sentiwordnet_pos(word_pos)
-            if swn_pos_tag != "":
-                aux = word_net_lemmatizer.lemmatize(word) + '.' + swn_pos_tag + '.01'
-                try:
-                    sum_score += swn.senti_synset(aux).obj_score()
-                    sum_pos_socre += swn.senti_synset(aux).pos_score()
-                    sum_neg_score += swn.senti_synset(aux).neg_score()
-                except WordNetError:
-                    pass
-        return sum_pos_socre / len(sentence_pos), sum_neg_score / len(sentence_pos), sum_score / len(sentence_pos)
 
     def split_train_test(self, test_size=0.25, random_state=0):
         return train_test_split(self.x, self.y, test_size=test_size, random_state=random_state)
@@ -199,15 +238,15 @@ class Preprocesor:
             result.append(self.get_sem_abbreviation_translation(sem_type))
         return result
 
-    def save_umls_features(self, filepath=r'./raw_features/semantic_types_ADE.txt'):
+    def save_umls_features(self, filepath=r'./raw_features/old/semantic_types_ADE.txt'):
         with open(filepath, 'w') as fd:
             for text in self.corpus:
                 sem_types, cuis = self.get_concept([text])
                 aux = self.translate_semantic_abbreviation(sem_types)
                 fd.write(" ".join(aux + cuis) + '\n')
-        print("UMLS features saved in:", filepath)
+        print("Not final UMLS features saved in:", filepath, "Please use translate_cuis.py to create the final file.")
 
-    def load_umls_features(self, filepath=r'./raw_features/semantic_types_ADE.txt'):
+    def load_umls_features(self, filepath=r'./raw_features/semantic_types_cuis_name_ADE.txt'):
         with open(filepath, 'r') as fd:
             for line in fd.readlines():
                 self.umls_semtypes_cuis.append(line.rstrip())
@@ -222,7 +261,7 @@ class Preprocesor:
     def save_syns_features(self, filepath=r'./raw_features/syns_ADE.txt'):
         with open(filepath, 'w') as fd:
             for line in self.corpus:
-                sentences_pos = self.ntlk_pos(line, to_stem=True)
+                sentences_pos = Preprocesor.ntlk_pos(line, to_stem=True)
                 synonyms = Preprocesor.get_syn_set(sentences_pos)
                 if not synonyms:
                     fd.write("-\n")
@@ -233,19 +272,9 @@ class Preprocesor:
     def save_sentiment_scores(self, filepath=r'./raw_features/sentiment_scores.txt'):
         with open(filepath, 'w') as fd:
             for line in self.corpus:
-                scores = list(self.get_sentiment_score(line))
+                scores = list(Preprocesor.get_sentiment_score(line))
                 fd.write(" ".join(map(str, scores)) + '\n')
         print("Sentiment scores saved in:", filepath)
-
-    @staticmethod
-    def load_sentiment_scores(filepath=r'./raw_features/sentiment_scores.txt'):
-        result = []
-        with open(filepath, 'r') as fd:
-            for line in fd.readlines():
-                scores = [float(i) for i in line.rstrip().split(" ")]
-                result.append(scores)
-        print("Sentiment scores loaded from:", filepath)
-        return result
 
     def create_sentiment_scores(self):
         self.sentiment_scores = csr_matrix(Preprocesor.load_sentiment_scores())
@@ -274,26 +303,38 @@ class Preprocesor:
 
     def create_features(self):
         self.create_n_grams()
-        self.create_tfidf_umls()
         self.create_tfidf_syns()
-        self.create_sentiment_scores()
+        self.create_tfidf_umls()
+        self.create_sentiment_scores()  # s-ar putea sa nu fie corect.....
 
-    def train_model(self, model_name='naive_bayes'):
+    def train_model(self, model_name='naive_bayes', svm_kernel='rbf'):
         self.create_features()
         self.shuffle_data()
         x_train, x_test, y_train, y_test = self.split_train_test()
         print("Start training using", model_name)
         if model_name == 'naive_bayes':
             model = Preprocesor.train_fit_with_naive_bayes(x_train, y_train)  # NB accuracy score: 0.8462323524408913 ->
-            # 0.8617111753699609
+            # 0.8617111753699609 -> 0.8710665079095085
         elif model_name == 'svm':
-            model = Preprocesor.train_fit_with_svc(x_train, y_train)  # SVM accuracy score:
-            # Liniar kernel: 0.9027045415887056, 0.9055961898282021
+            model = Preprocesor.train_fit_with_svc(x_train, y_train, kernel=svm_kernel)  # SVM accuracy score:
+            # Linear kernel: 0.9027045415887056, 0.9055961898282021, 0.9069569654703181
             # RBF kernel: 0.70
         else:
             raise Exception("Unknown model. Available models: naive_bayes, svc")
         print("Finishing training")
         return model, x_test, y_test
+
+    def create_topics(self, text):  # --------------------------------------------- nu e gata inca
+        bow_corpus = Preprocesor.get_corpus_bow(text)
+        model = LdaMallet(self.mallet_path, corpus=bow_corpus.toarray())
+        vector = model[bow_corpus]
+        print(vector)
+
+    @staticmethod
+    def get_corpus_bow(text):  # ------------------------------------------- nu e gata inca
+        vectorizer = CountVectorizer()
+        return vectorizer.fit_transform([text])
+
 
 # 4.1.2. N-grams - done
 # 4.1.3. UMLS semantic types and concept IDs - done (nu stiu daca CUI-urile trebuie transformate cumva,
@@ -309,11 +350,13 @@ class Preprocesor:
 def main():
     p = Preprocesor()
 
-    p.read_rel_extension_file(r"./corpus/ADE-Corpus-V2/DRUG-AE.rel")
-    p.read_txt_extension_file(r"./corpus/ADE-Corpus-V2/ADE-NEG.txt")
+    p.read_rel_extension_file()
+    p.read_txt_extension_file()
+
+    # p.create_topics(p.corpus[0])
 
     model_name = "svm"
-    model, x_test, y_test = p.train_model(model_name)
+    model, x_test, y_test = p.train_model(model_name, svm_kernel='linear')
 
     Preprocesor.test_model(model, model_name, x_test, y_test)
 
