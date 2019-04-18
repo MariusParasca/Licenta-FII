@@ -3,6 +3,7 @@ from nltk.tag import pos_tag
 from nltk.corpus import wordnet
 from nltk.corpus import sentiwordnet as swn
 from nltk.corpus.reader.wordnet import WordNetError
+from nltk.corpus import stopwords
 from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import MultinomialNB
@@ -11,13 +12,20 @@ from sklearn.metrics import accuracy_score
 from sklearn.utils import shuffle
 from scipy.sparse import csr_matrix, hstack
 from pymetamap import MetaMap
-from gensim.models.wrappers import LdaMallet
-import re
+from gensim.utils import simple_preprocess
+import pandas as pd
+import gensim.corpora as corpora
 import string
+import re
+import gensim
+import spacy
 
 
 class Preprocesor:
     ADJ = 'JJ'
+    ADJ_COMPARATIVE = 'JJR'
+    ADJ_SUPERLATIVE = 'JJS'
+    MODAL = 'MD'
     NOUN = 'NN'
     VERB = 'VB'
     ADVERB = 'RB'
@@ -27,6 +35,7 @@ class Preprocesor:
                  mallet_path=r'../mallet-2.0.8/bin/mallet'):
         self.mm = MetaMap.get_instance(metamap_path)
         self.mallet_path = mallet_path
+        self.stop_words = stopwords.words('english')
         self.sem_abbreviation_translations = []
         self.x = []
         self.y = []
@@ -34,6 +43,8 @@ class Preprocesor:
         self.umls_semtypes_cuis = []
         self.syns_features = []
         self.sentiment_scores = []
+        self.topics_features = []
+        self.other_features = []
 
     @staticmethod
     def metamap_pos_to_sentiwordnet_pos(pos):
@@ -196,11 +207,16 @@ class Preprocesor:
     def create_n_grams(self, ngram_range=(1, 3)):
         vectorizer = CountVectorizer(ngram_range=ngram_range)
         self.x = vectorizer.fit_transform(self.corpus)
+        print("1,2,3-grams created")
 
     def shuffle_data(self):
         self.x, self.y = shuffle(self.x, self.y)
 
     def get_concept(self, text_array):
+        """Extract the concept using metamap. To make this work you need to open an terminal and change directory to
+           public_mm folder of metamap and the run the commands:
+           ./bin/skrmedpostctl start
+           ./bin/wsdserverctl start"""
         concepts, error = self.mm.extract_concepts(text_array)
         semantic_types = set()
         cuis = set()
@@ -276,6 +292,41 @@ class Preprocesor:
                 fd.write(" ".join(map(str, scores)) + '\n')
         print("Sentiment scores saved in:", filepath)
 
+    def save_other_features(self, filepath=r'./raw_features/other_features.txt'):
+        with open(filepath, 'w') as fd:
+            for sentence in self.corpus:
+                aux = [str(len(sentence.split(" ")))]
+                word_poses = Preprocesor.ntlk_pos(sentence, to_stem=True)
+                adj_c = False
+                adj_s = False
+                modal = False
+                for _, pos in word_poses:
+                    if not adj_c and pos == Preprocesor.ADJ_COMPARATIVE:
+                        aux.append('1')
+                        adj_c = True
+                if not adj_c:
+                    aux.append('0')
+                for _, pos in word_poses:
+                    if not adj_s and pos == Preprocesor.ADJ_SUPERLATIVE:
+                        aux.append('1')
+                        adj_s = True
+                if not adj_s:
+                    aux.append('0')
+                for _, pos in word_poses:
+                    if not modal and pos == Preprocesor.MODAL:
+                        aux.append('1')
+                        modal = True
+                if not modal:
+                    aux.append('0')
+                fd.write(" ".join(aux) + '\n')
+        print("Other features saved in:", filepath)
+
+    def load_other_features(self, filepath=r'./raw_features/other_features.txt'):
+        with open(filepath, 'r') as fd:
+            for line in fd.readlines():
+                self.other_features.append([int(i) for i in line.rstrip().split(" ")])
+        print("Other features laoded from:", filepath)
+
     def create_sentiment_scores(self):
         self.sentiment_scores = csr_matrix(Preprocesor.load_sentiment_scores())
         self.concat_x_with(self.sentiment_scores)
@@ -301,11 +352,22 @@ class Preprocesor:
         x_to_stack = tfidf_transformer.fit_transform(x_aux)
         self.concat_x_with(x_to_stack)
 
+    def create_topics_features(self):
+        self.load_topics_features()
+        self.topics_features = csr_matrix(self.topics_features)
+        self.concat_x_with(self.topics_features)
+
+    def create_other_features(self):
+        self.load_other_features()
+        self.concat_x_with(csr_matrix(self.other_features))
+
     def create_features(self):
         self.create_n_grams()
         self.create_tfidf_syns()
         self.create_tfidf_umls()
-        self.create_sentiment_scores()  # s-ar putea sa nu fie corect.....
+        self.create_sentiment_scores()
+        self.create_topics_features()
+        self.create_other_features()
 
     def train_model(self, model_name='naive_bayes', svm_kernel='rbf'):
         self.create_features()
@@ -314,7 +376,7 @@ class Preprocesor:
         print("Start training using", model_name)
         if model_name == 'naive_bayes':
             model = Preprocesor.train_fit_with_naive_bayes(x_train, y_train)  # NB accuracy score: 0.8462323524408913 ->
-            # 0.8617111753699609 -> 0.8710665079095085
+            # 0.8617111753699609 -> 0.8710665079095085 -> 0.873958156149005 -> 0.8788909678516754 -> 0.8845041673754039
         elif model_name == 'svm':
             model = Preprocesor.train_fit_with_svc(x_train, y_train, kernel=svm_kernel)  # SVM accuracy score:
             # Linear kernel: 0.9027045415887056, 0.9055961898282021, 0.9069569654703181
@@ -324,27 +386,117 @@ class Preprocesor:
         print("Finishing training")
         return model, x_test, y_test
 
-    def create_topics(self, text):  # --------------------------------------------- nu e gata inca
-        bow_corpus = Preprocesor.get_corpus_bow(text)
-        model = LdaMallet(self.mallet_path, corpus=bow_corpus.toarray())
-        vector = model[bow_corpus]
-        print(vector)
+    def create_tokenized_corpus(self):
+        aux = []
+        for sentence in self.corpus:
+            aux.append(word_tokenize(sentence))
+        return aux
+
+    def create_bigrams_models(self):
+        bigram = gensim.models.Phrases(self.create_tokenized_corpus(), min_count=5, threshold=100)
+        bigram_mod = gensim.models.phrases.Phraser(bigram)
+
+        return bigram_mod
 
     @staticmethod
-    def get_corpus_bow(text):  # ------------------------------------------- nu e gata inca
-        vectorizer = CountVectorizer()
-        return vectorizer.fit_transform([text])
+    def remove_stopwords(texts):
+        stop_words = stopwords.words('english')
+        return [[word for word in simple_preprocess(str(doc)) if word not in stop_words] for doc in texts]
+
+    @staticmethod
+    def make_bigrams(bigram_mod, texts):
+        return [bigram_mod[doc] for doc in texts]
+
+    @staticmethod
+    def lemmatization(texts, allowed_postags=None):
+        """https://spacy.io/api/annotation"""
+        if not allowed_postags:
+            allowed_postags = ['NOUN', 'ADJ', 'VERB', 'ADV']
+        nlp = spacy.load('en', disable=['parser', 'ner'])
+        texts_out = []
+        for sent in texts:
+            doc = nlp(" ".join(sent))
+            texts_out.append([token.lemma_ for token in doc if token.pos_ in allowed_postags])
+        return texts_out
+
+    @staticmethod
+    def preprocess_for_topics(data_words, bigram_mod):
+        data_words_nostops = Preprocesor.remove_stopwords(data_words)
+
+        data_words_bigrams = Preprocesor.make_bigrams(bigram_mod, data_words_nostops)
+
+        data_lemmatized = Preprocesor.lemmatization(data_words_bigrams, allowed_postags=['NOUN', 'ADJ', 'VERB', 'ADV'])
+
+        id2word = corpora.Dictionary(data_lemmatized)
+
+        texts = data_lemmatized
+
+        corpus = [id2word.doc2bow(text) for text in texts]
+
+        return corpus, id2word
+
+    @staticmethod
+    def create_lda_mallet(corpus, id2word, mallet_path=r'../mallet-2.0.8/bin/mallet'):
+        ldamallet = gensim.models.wrappers.LdaMallet(mallet_path, corpus=corpus, num_topics=20, id2word=id2word)
+        return ldamallet
+
+    @staticmethod
+    def format_topics_sentences(ldamodel, corpus, texts):
+        # Init output
+        sent_topics_df = pd.DataFrame()
+
+        # Get main topic in each document
+        for i, row in enumerate(ldamodel[corpus]):
+            row = sorted(row, key=lambda x: (x[1]), reverse=True)
+            # Get the Dominant topic, Perc Contribution and Keywords for each document
+            for j, (topic_num, prop_topic) in enumerate(row):
+                if j == 0:  # => dominant topic
+                    wp = ldamodel.show_topic(topic_num)
+                    topic_keywords = ", ".join([word for word, prop in wp])
+                    sent_topics_df = sent_topics_df.append(
+                        pd.Series([int(topic_num), round(prop_topic, 4), topic_keywords]), ignore_index=True)
+                else:
+                    break
+        sent_topics_df.columns = ['Dominant_Topic', 'Perc_Contribution', 'Topic_Keywords']
+
+        # Add original text to the end of the output
+        contents = pd.Series(texts)
+        sent_topics_df = pd.concat([sent_topics_df, contents], axis=1)
+        return sent_topics_df
+
+    def save_topics_features(self, filepath='./raw_features/topics.txt'):
+        data_words = self.create_tokenized_corpus()
+        bigram_mod = self.create_bigrams_models()
+        corpus, id2word = Preprocesor.preprocess_for_topics(data_words, bigram_mod)
+        optimal_model = Preprocesor.create_lda_mallet(corpus, id2word)
+
+        df_topic_sents_keywords = Preprocesor.format_topics_sentences(ldamodel=optimal_model, corpus=corpus,
+                                                                      texts=self.corpus)
+
+        df_dominant_topic = df_topic_sents_keywords.reset_index()
+        df_dominant_topic.columns = ['Document_No', 'Dominant_Topic', 'Topic_Perc_Contrib', 'Keywords', 'Text']
+
+        with open(filepath, 'w') as fd:
+            fd.write(df_dominant_topic.to_string())
+
+    def load_topics_features(self, filepath='./raw_features/topics.txt'):
+        with open(filepath, 'r') as fd:
+            lines = fd.readlines()
+            for line in lines[1:]:
+                self.topics_features.append([float(i) for i in re.findall(r'\d+\.\d+', line)])
 
 
 # 4.1.2. N-grams - done
-# 4.1.3. UMLS semantic types and concept IDs - done (nu stiu daca CUI-urile trebuie transformate cumva,
-# asa ca le-am lasat asa cum sunt ele) -> aprox 0.5-1% imbunatatire cu NB
+# 4.1.3. UMLS semantic types and concept IDs - done -> aprox 0.5-1% imbunatatire cu NB
 # 4.1.4. Syn-set expansion - done -> aprox 0.5-1% imbunatatire cu NB
 # 4.1.5. Change phrases - neimplementat
 # 4.1.6. ADR lexicon matches - neimplementat
-# 4.1.7. Sentiword scores - done -> nu stiu daca e corect -> nu pare a avea vreo imbunatatirele a acuratetei
-# 4.1.8. Topic-based feature - neimplementat -> nu inteleg cum trebuie sa iau topic-ul
+# 4.1.7. Sentiword scores - done
+# 4.1.8. Topic-based feature - done
 #   see: https://rare-technologies.com/tutorial-on-mallet-in-python/
+
+# Intrebari:
+# Ar trebui sa fac scalare pe valorile topicurilor (valorile fiind intre 0- 17, pe acolo?
 
 
 def main():
@@ -353,39 +505,13 @@ def main():
     p.read_rel_extension_file()
     p.read_txt_extension_file()
 
-    # p.create_topics(p.corpus[0])
-
-    model_name = "svm"
+    model_name = "naive_bayes"
     model, x_test, y_test = p.train_model(model_name, svm_kernel='linear')
 
     Preprocesor.test_model(model, model_name, x_test, y_test)
 
-    # transform_data_to_numpy_array()
-    # p.create_n_grams()
-
-    # p.get_features()
-    # p.get_features(dataset)
-
-    # TFDIF TEST:
-    # sem, cuis = p.get_concept([non_adr[3][1]])
-    # tfidf = p.create_fit_transform_tfidf(non_adr[1][1])
-    # print(p.get_tfidf(tfidf, sem))
-
-    # POS TEST:
-    # sentences_pos = p.ntlk_pos(non_adr[1][1], to_stem=False)
-    # print(sentences_pos)
-
-    # Lenght in words
-    # print(len(sentences_pos))
-
-    # SYNs TEST:
-    # print(Preprocesor.get_syn_set(sentences_pos))
-
-    # Sentiment score TEST:
-    # print(p.get_sentiment_score(non_adr[1][1]))
-
-    # print(WordNetLemmatizer().lemmatize("was"))
-    # print(p.get_features(non_adr)["1-grams"][1])
+    # plt.spy(p.x, markersize=10.0)
+    # plt.show()
    
 
 if __name__ == '__main__':
