@@ -5,7 +5,7 @@ from nltk.corpus import sentiwordnet as swn
 from nltk.corpus.reader.wordnet import WordNetError
 from nltk.corpus import stopwords
 from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_validate
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
@@ -13,6 +13,8 @@ from sklearn.utils import shuffle
 from scipy.sparse import csr_matrix, hstack
 from pymetamap import MetaMap
 from gensim.utils import simple_preprocess
+from imblearn.over_sampling import SMOTE
+from collections import Counter
 import pandas as pd
 import gensim.corpora as corpora
 import string
@@ -30,6 +32,8 @@ class Preprocesor:
     VERB = 'VB'
     ADVERB = 'RB'
     SYN_TAG = "SYN"
+    NAIVE_BAYES = 'naive_bayes'
+    SVM = 'svm'
 
     def __init__(self, metamap_path='/home/noway/Facultate/Licenta/public_mm/bin/metamap18',
                  mallet_path=r'../mallet-2.0.8/bin/mallet'):
@@ -369,20 +373,44 @@ class Preprocesor:
         self.create_topics_features()
         self.create_other_features()
 
-    def train_model(self, model_name='naive_bayes', svm_kernel='rbf'):
+    def oversample_dataset(self):
+        print('Original dataset shape %s' % Counter(self.y))
+        sm = SMOTE(random_state=42)
+        self.x, self.y = sm.fit_resample(self.x, self.y)
+        print('Original dataset shape %s' % Counter(self.y))
+
+    def prepare_data_fro_training(self, data_oversample=True):
         self.create_features()
         self.shuffle_data()
+        if data_oversample:
+            self.oversample_dataset()
+
+    def cross_validate_model(self, model_name, cv=3, svm_kervel='linear'):
+        self.prepare_data_fro_training(data_oversample=True)
+        if model_name == Preprocesor.NAIVE_BAYES:
+            model = MultinomialNB()
+        elif model_name == Preprocesor.SVM:
+            model = SVC(kernel=svm_kervel)
+        else:
+            raise Exception("Unknown model. Available models: naive_bayes, svm")
+        cv_results = cross_validate(model, self.x, self.y, cv=cv, return_train_score=True)
+        # print("Fit time", cv_results['fit_time'])
+        print("Test score", cv_results['test_score'])
+        print("Train score", cv_results['train_score'])
+
+    def train_model(self, model_name='naive_bayes', svm_kernel='rbf'):
+        self.prepare_data_fro_training()
         x_train, x_test, y_train, y_test = self.split_train_test()
         print("Start training using", model_name)
-        if model_name == 'naive_bayes':
+        if model_name == Preprocesor.NAIVE_BAYES:
             model = Preprocesor.train_fit_with_naive_bayes(x_train, y_train)  # NB accuracy score: 0.8462323524408913 ->
             # 0.8617111753699609 -> 0.8710665079095085 -> 0.873958156149005 -> 0.8788909678516754 -> 0.8845041673754039
-        elif model_name == 'svm':
+        elif model_name == Preprocesor.SVM:
             model = Preprocesor.train_fit_with_svc(x_train, y_train, kernel=svm_kernel)  # SVM accuracy score:
             # Linear kernel: 0.9027045415887056, 0.9055961898282021, 0.9069569654703181
             # RBF kernel: 0.70
         else:
-            raise Exception("Unknown model. Available models: naive_bayes, svc")
+            raise Exception("Unknown model. Available models: naive_bayes, svm")
         print("Finishing training")
         return model, x_test, y_test
 
@@ -484,19 +512,22 @@ class Preprocesor:
             lines = fd.readlines()
             for line in lines[1:]:
                 self.topics_features.append([float(i) for i in re.findall(r'\d+\.\d+', line)])
-
-
+# use max entropy
+# K fold cross validations
 # 4.1.2. N-grams - done
-# 4.1.3. UMLS semantic types and concept IDs - done -> aprox 0.5-1% imbunatatire cu NB
-# 4.1.4. Syn-set expansion - done -> aprox 0.5-1% imbunatatire cu NB
+# 4.1.3. UMLS semantic types and concept IDs - done
+# 4.1.4. Syn-set expansion - done
 # 4.1.5. Change phrases - neimplementat
 # 4.1.6. ADR lexicon matches - neimplementat
 # 4.1.7. Sentiword scores - done
 # 4.1.8. Topic-based feature - done
 #   see: https://rare-technologies.com/tutorial-on-mallet-in-python/
+# 4.1.9. Other features - done
 
-# Intrebari:
-# Ar trebui sa fac scalare pe valorile topicurilor (valorile fiind intre 0- 17, pe acolo?
+# With SMOTE:
+# Accuracy svm Linear:  0.956756109247724
+# Accuracy naive_bayes:  0.8959032103497844
+# Accuracy svm RBF:  0.567680881648299
 
 
 def main():
@@ -506,7 +537,15 @@ def main():
     p.read_txt_extension_file()
 
     model_name = "naive_bayes"
-    model, x_test, y_test = p.train_model(model_name, svm_kernel='linear')
+
+    print(p.corpus)
+    p.create_n_grams()
+
+    return
+    p.cross_validate_model(model_name, cv=5)
+
+
+    model, x_test, y_test = p.train_model(model_name, svm_kernel='rbf')
 
     Preprocesor.test_model(model, model_name, x_test, y_test)
 
