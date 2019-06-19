@@ -15,6 +15,7 @@ from pymetamap import MetaMap
 from gensim.utils import simple_preprocess
 from imblearn.over_sampling import SMOTE
 from collections import Counter
+from sklearn.metrics import f1_score
 import pandas as pd
 import gensim.corpora as corpora
 import string
@@ -190,6 +191,7 @@ class Preprocesor:
     def test_model(model, model_name, x_test, y_test):
         y_predicted = model.predict(x_test)
         print("Accuracy " + model_name + ": ", accuracy_score(y_test, y_predicted))
+        return y_predicted
 
     def read_rel_extension_file(self, filepath=r'./raw_features/DRUG-AE_processed.rel'):
         with open(filepath, 'r') as fd:
@@ -259,6 +261,8 @@ class Preprocesor:
         return result
 
     def save_umls_features(self, filepath=r'./raw_features/old/semantic_types_ADE.txt'):
+        """corpus need to be without any preprocessing"""
+        self.create_sem_abbreviation_translations()
         with open(filepath, 'w') as fd:
             for text in self.corpus:
                 sem_types, cuis = self.get_concept([text])
@@ -367,11 +371,16 @@ class Preprocesor:
 
     def create_features(self):
         self.create_n_grams()
-        self.create_tfidf_syns()
+
         self.create_tfidf_umls()
-        self.create_sentiment_scores()
-        self.create_topics_features()
+
+        self.create_tfidf_syns()
+
+        # self.create_sentiment_scores()
+        # self.create_topics_features()
         self.create_other_features()
+        return
+
 
     def oversample_dataset(self):
         print('Original dataset shape %s' % Counter(self.y))
@@ -454,8 +463,9 @@ class Preprocesor:
         data_words_bigrams = Preprocesor.make_bigrams(bigram_mod, data_words_nostops)
 
         data_lemmatized = Preprocesor.lemmatization(data_words_bigrams, allowed_postags=['NOUN', 'ADJ', 'VERB', 'ADV'])
-
+        print(data_lemmatized[:3])
         id2word = corpora.Dictionary(data_lemmatized)
+        print(id2word)
 
         texts = data_lemmatized
 
@@ -536,18 +546,15 @@ def main():
     p.read_rel_extension_file()
     p.read_txt_extension_file()
 
-    model_name = "naive_bayes"
+    model_name = "svm"
 
-    print(p.corpus)
-    p.create_n_grams()
-
-    return
-    p.cross_validate_model(model_name, cv=5)
-
+    # p.cross_validate_model(model_name, cv=5)
 
     model, x_test, y_test = p.train_model(model_name, svm_kernel='rbf')
 
-    Preprocesor.test_model(model, model_name, x_test, y_test)
+    y_predicted = Preprocesor.test_model(model, model_name, x_test, y_test)
+    f_score = f1_score(y_test, y_predicted, average='weighted')
+    print("F score is: ", f_score)
 
     # plt.spy(p.x, markersize=10.0)
     # plt.show()
